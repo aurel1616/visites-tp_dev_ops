@@ -1,35 +1,23 @@
-import pytest
-from fastapi.testclient import TestClient
-
-from app.main import app, redis_client
-
-client = TestClient(app)
+def test_root_increments(client):
+    assert client.get("/").json() == {"visites": 1}
+    assert client.get("/").json() == {"visites": 2}
 
 
-@pytest.fixture(autouse=True)
-def vider_redis() -> None:
-    redis_client.flushdb()
+def test_health_ok(client):
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
 
 
-def test_accueil_incremente_le_compteur() -> None:
-    premiere_reponse = client.get("/")
-    deuxieme_reponse = client.get("/")
-
-    assert premiere_reponse.status_code == 200
-    assert premiere_reponse.json() == {"visites": 1}
-    assert deuxieme_reponse.json() == {"visites": 2}
+def test_health_redis_down(client, fake_server):
+    fake_server.connected = False
+    resp = client.get("/health")
+    assert resp.status_code == 503
+    assert resp.text == "redis down"
 
 
-def test_health_verifie_redis() -> None:
-    reponse = client.get("/health")
-
-    assert reponse.status_code == 200
-    assert reponse.json() == {"status": "ok"}
-
-
-def test_metrics_expose_le_compteur() -> None:
+def test_metrics_counts_requests(client):
     client.get("/")
-    reponse = client.get("/metrics")
-
-    assert reponse.status_code == 200
-    assert "visites_total" in reponse.text
+    body = client.get("/metrics").text
+    assert 'http_requests_total{method="GET",path="/",status="200"}' in body
+    assert "http_request_duration_seconds" in body

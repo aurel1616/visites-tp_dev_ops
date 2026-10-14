@@ -1,45 +1,49 @@
-import os
+import time
 
-from fastapi import FastAPI, HTTPException
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, generate_latest
-from redis import Redis
-from redis.exceptions import RedisError
-from starlette.responses import Response
+import redis
+from fastapi import FastAPI, Request, Response
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
-redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-redis_client = Redis.from_url(redis_url, decode_responses=True)
+from .config import settings
 
-visites_total = Counter(
-    "visites_total",
-    "Nombre total d'appels à la page d'accueil",
-)
+app = FastAPI(title="visites")
+r = redis.Redis.from_url(settings.redis_url, decode_responses=True)
 
-app = FastAPI(title="API Visites", version="0.1.0")
+REQUESTS = Counter("http_requests_total", "Requêtes HTTP", ["method", "path", "status"])
+LATENCY = Histogram("http_request_duration_seconds", "Latence", ["path"])
+
+
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next):
+    """Compte toutes les réponses, y compris les 500 dues à une exception."""
+    path = request.url.path
+    start = time.perf_counter()
+    status = "500"
+    try:
+        response = await call_next(request)
+        status = str(response.status_code)
+        return response
+    finally:
+        if path != "/metrics":
+            LATENCY.labels(path).observe(time.perf_counter() - start)
+            REQUESTS.labels(request.method, path, status).inc()
 
 
 @app.get("/")
-def accueil() -> dict[str, int]:
-    nombre = redis_client.incr("visites")
-    visites_total.inc()
-    return {"visites": nombre}
+def root():
+    n = r.incr("visites")
+    return {"visites": n}
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
+def health():
     try:
-        redis_client.ping()
-    except RedisError as erreur:
-        raise HTTPException(
-            status_code=503,
-            detail="Redis est indisponible",
-        ) from erreur
-
+        r.ping()
+    except redis.exceptions.ConnectionError:
+        return Response(status_code=503, content="redis down")
     return {"status": "ok"}
 
 
 @app.get("/metrics")
-def metrics() -> Response:
-    return Response(
-        content=generate_latest(),
-        media_type=CONTENT_TYPE_LATEST,
-    )
+def metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
