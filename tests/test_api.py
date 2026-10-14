@@ -1,7 +1,8 @@
 def test_root_increments(client):
-    assert client.get("/").json() == {"visites": 1}
+    first = client.get("/")
+    assert first.json() == {"visites": 1}
+    assert first.headers["x-visites-version"] == "0.1.0"
     assert client.get("/").json() == {"visites": 2}
-
 
 def test_health_ok(client):
     resp = client.get("/health")
